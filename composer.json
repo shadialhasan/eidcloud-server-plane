@@ -1,0 +1,25 @@
+{
+  "name": "eidcloud/server-plane",
+  "description": "Unified Linux server control plane and service manager CLI for Nginx, PHP-FPM, MySQL, and UFW in pure PHP",
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Eng. MHD. Shadi AL-Hasan",
+      "email": "shadi@eidcloud.com",
+      "role": "Lead Architect & Maintainer"
+    }
+  ],
+  "require": {
+    "php": ">=8.2"
+  },
+  "autoload": {
+    "psr-4": {
+      "EidCloud\\ServerPlane\\": "src/"
+    }
+  },
+  "bin": [
+    "bin/eidcloud-server"
+  ],
+  "minimum-stability": "stable"
+}

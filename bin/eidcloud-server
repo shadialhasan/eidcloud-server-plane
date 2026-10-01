@@ -1,0 +1,257 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+// Automatic PSR-4 fallback autoloader when vendor/autoload is not present
+spl_autoload_register(function ($class) {
+    $prefix = 'EidCloud\\ServerPlane\\';
+    $baseDir = __DIR__ . '/../src/';
+    $len = strlen($prefix);
+    if (strncmp($prefix, $class, $len) !== 0) {
+        return;
+    }
+    $relativeClass = substr($class, $len);
+    $file = $baseDir . str_replace('\\', '/', $relativeClass) . '.php';
+    if (file_exists($file)) {
+        require_once $file;
+    }
+});
+
+use EidCloud\ServerPlane\ServerPlane;
+
+$plane = new ServerPlane();
+
+$argvCopy = $argv;
+array_shift($argvCopy); // strip script name
+
+$command = $argvCopy[0] ?? 'dashboard';
+$flags = array_slice($argvCopy, 1);
+
+function printHelp(): void
+{
+    echo "\033[1m\033[36m🎛️  EidCloud Server Plane CLI\033[0m - Unified Linux Server Control Plane\n";
+    echo "\033[2mVersion 1.0.0 | Pure PHP 8.2+ (Zero external dependencies)\033[0m\n\n";
+    echo "\033[33mUSAGE:\033[0m\n";
+    echo "  php bin/eidcloud-server [command] [options]\n\n";
+    echo "\033[33mCOMMANDS:\033[0m\n";
+    echo "  \033[32mdashboard\033[0m              Display terminal dashboard (default)\n";
+    echo "  \033[32mstatus\033[0m                 Display server vitals and service overview\n";
+    echo "  \033[32maudit\033[0m                  Perform automated health and security checks\n";
+    echo "  \033[32msnapshot\033[0m               Export AI-ready JSON system state snapshot\n";
+    echo "  \033[32mports\033[0m                  List open network ports and listening daemons\n";
+    echo "  \033[32mnginx\033[0m [action]         Control Nginx (--status, --test, --reload, --restart)\n";
+    echo "  \033[32mphp-fpm\033[0m [action]       Control PHP-FPM (--status, --restart, --reload)\n";
+    echo "  \033[32mmysql\033[0m [action]         Control MySQL/MariaDB (--status, --restart)\n";
+    echo "  \033[32mredis\033[0m [action]         Control Redis (--status, --ping, --restart)\n";
+    echo "  \033[32mfirewall\033[0m [action]      Manage UFW rules (--list, --enable, --disable, --allow <port>)\n";
+    echo "  \033[32mssl\033[0m [action]           Inspect and renew SSL certs (--list, --renew)\n";
+    echo "  \033[32m--help, -h\033[0m             Show this help screen\n\n";
+    echo "\033[33mOPTIONS:\033[0m\n";
+    echo "  --json                 Output result in structured JSON format\n";
+    echo "  --watch                Live monitor mode (refresh every 2 seconds)\n\n";
+    echo "\033[33mEXAMPLES:\033[0m\n";
+    echo "  php bin/eidcloud-server status\n";
+    echo "  php bin/eidcloud-server nginx --reload\n";
+    echo "  php bin/eidcloud-server php-fpm --restart\n";
+    echo "  php bin/eidcloud-server firewall --list\n";
+    echo "  php bin/eidcloud-server dashboard --watch\n";
+    echo "  php bin/eidcloud-server snapshot > system_state.json\n\n";
+}
+
+if (in_array('--help', $argv) || in_array('-h', $argv) || $command === 'help') {
+    printHelp();
+    exit(0);
+}
+
+$isJson = in_array('--json', $flags);
+$isWatch = in_array('--watch', $flags);
+
+switch ($command) {
+    case 'dashboard':
+        if ($isWatch) {
+            echo "\033[?25l"; // hide cursor
+            // trap exit signals if pcntl is loaded
+            if (extension_loaded('pcntl')) {
+                pcntl_async_signals(true);
+                pcntl_signal(SIGINT, function () {
+                    echo "\033[?25h\n";
+                    exit(0);
+                });
+            }
+            while (true) {
+                echo $plane->renderDashboard(true);
+                sleep(2);
+            }
+        } else {
+            echo $plane->renderDashboard(false);
+        }
+        break;
+
+    case 'status':
+        $snapshot = $plane->getSnapshot();
+        if ($isJson) {
+            echo json_encode($snapshot, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+        } else {
+            echo $plane->renderDashboard(false);
+        }
+        break;
+
+    case 'snapshot':
+        echo json_encode($plane->getSnapshot(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+        break;
+
+    case 'audit':
+        $vitals = $plane->getVitalsCollector()->getAllVitals();
+        $audit = $plane->getAuditor()->audit($plane->getServices(), $vitals);
+        if ($isJson) {
+            echo json_encode($audit, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+        } else {
+            echo "\n\033[1m🔍 EIDCLOUD HEALTH & SECURITY AUDIT\033[0m\n";
+            echo "Status: " . $audit['status'] . " (Score: " . $audit['score'] . "/100)\n";
+            echo "Findings: " . $audit['findings_count'] . "\n\n";
+            foreach ($audit['findings'] as $f) {
+                $color = $f['level'] === 'CRITICAL' ? "\033[31m" : "\033[33m";
+                echo " {$color}[{$f['level']}]\033[0m \033[1m{$f['title']}\033[0m\n";
+                echo "   Details:        {$f['detail']}\n";
+                echo "   Recommendation: {$f['recommendation']}\n\n";
+            }
+            if (empty($audit['findings'])) {
+                echo "\033[32m✔ All checks passed cleanly. System is healthy.\033[0m\n\n";
+            }
+        }
+        break;
+
+    case 'ports':
+        $ports = $plane->getVitalsCollector()->getOpenPorts();
+        if ($isJson) {
+            echo json_encode($ports, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+        } else {
+            echo "\n\033[1m🌐 OPEN LISTENING PORTS\033[0m\n";
+            printf("  %-8s %-20s %-8s %s\n", "PROTO", "ADDRESS", "PORT", "SERVICE");
+            echo "  " . str_repeat('─', 54) . "\n";
+            foreach ($ports as $p) {
+                printf("  %-8s %-20s %-8d %s\n", strtoupper($p['proto']), $p['address'], $p['port'], $p['service']);
+            }
+            echo "\n";
+        }
+        break;
+
+    case 'nginx':
+        /** @var \EidCloud\ServerPlane\Services\NginxService $svc */
+        $svc = $plane->getService('nginx');
+        if (in_array('--test', $flags)) {
+            $t = $svc->testConfig();
+            echo ($t['valid'] ? "\033[32m✔ Syntax OK\033[0m\n" : "\033[31m✖ Syntax Error\033[0m\n") . $t['output'] . "\n";
+        } elseif (in_array('--reload', $flags)) {
+            $res = $svc->reload();
+            echo ($res['success'] ? "\033[32m✔ Nginx reloaded successfully.\033[0m\n" : "\033[31m✖ Failed: {$res['stderr']}\033[0m\n");
+        } elseif (in_array('--restart', $flags)) {
+            $res = $svc->restart();
+            echo ($res['success'] ? "\033[32m✔ Nginx restarted successfully.\033[0m\n" : "\033[31m✖ Failed: {$res['stderr']}\033[0m\n");
+        } else {
+            echo json_encode($svc->getStatus(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+        }
+        break;
+
+    case 'php-fpm':
+        /** @var \EidCloud\ServerPlane\Services\PhpFpmService $svc */
+        $svc = $plane->getService('php-fpm');
+        if (in_array('--restart', $flags)) {
+            $res = $svc->restart();
+            echo ($res['success'] ? "\033[32m✔ PHP-FPM restarted.\033[0m\n" : "\033[31m✖ Failed: {$res['stderr']}\033[0m\n");
+        } elseif (in_array('--reload', $flags)) {
+            $res = $svc->reload();
+            echo ($res['success'] ? "\033[32m✔ PHP-FPM reloaded.\033[0m\n" : "\033[31m✖ Failed: {$res['stderr']}\033[0m\n");
+        } else {
+            echo json_encode($svc->getStatus(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+        }
+        break;
+
+    case 'mysql':
+        /** @var \EidCloud\ServerPlane\Services\DatabaseService $svc */
+        $svc = $plane->getService('mysql');
+        if (in_array('--restart', $flags)) {
+            $res = $svc->restart();
+            echo ($res['success'] ? "\033[32m✔ Database restarted.\033[0m\n" : "\033[31m✖ Failed: {$res['stderr']}\033[0m\n");
+        } else {
+            echo json_encode($svc->getStatus(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+        }
+        break;
+
+    case 'redis':
+        /** @var \EidCloud\ServerPlane\Services\RedisService $svc */
+        $svc = $plane->getService('redis');
+        if (in_array('--ping', $flags)) {
+            $pong = $svc->ping();
+            echo $pong ? "\033[32m✔ Redis PONG\033[0m\n" : "\033[31m✖ Redis ping failed\033[0m\n";
+        } elseif (in_array('--restart', $flags)) {
+            $res = $svc->restart();
+            echo ($res['success'] ? "\033[32m✔ Redis restarted.\033[0m\n" : "\033[31m✖ Failed: {$res['stderr']}\033[0m\n");
+        } else {
+            echo json_encode($svc->getStatus(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+        }
+        break;
+
+    case 'firewall':
+        /** @var \EidCloud\ServerPlane\Services\FirewallService $svc */
+        $svc = $plane->getService('ufw');
+        if (in_array('--list', $flags) || empty($flags)) {
+            $rules = $svc->getRules();
+            echo "\n\033[1m🔥 UFW FIREWALL RULES\033[0m\n";
+            if (empty($rules)) {
+                echo "  No active rules configured or firewall inactive.\n\n";
+            } else {
+                printf("  %-6s %-20s %-12s %s\n", "[#]", "TO", "ACTION", "FROM");
+                echo "  " . str_repeat('─', 50) . "\n";
+                foreach ($rules as $r) {
+                    printf("  [%-3d] %-20s %-12s %s\n", $r['index'], $r['to'], $r['action'] . ' ' . $r['direction'], $r['from']);
+                }
+                echo "\n";
+            }
+        } elseif (in_array('--enable', $flags)) {
+            $res = $svc->start();
+            echo $res['stdout'] . "\n";
+        } elseif (in_array('--disable', $flags)) {
+            $res = $svc->stop();
+            echo $res['stdout'] . "\n";
+        } elseif (in_array('--allow', $flags)) {
+            $key = array_search('--allow', $flags);
+            $port = $flags[$key + 1] ?? null;
+            if ($port) {
+                $res = $svc->allowPort($port);
+                echo $res['stdout'] . "\n";
+            } else {
+                echo "\033[31mError: Port required for --allow\033[0m\n";
+            }
+        }
+        break;
+
+    case 'ssl':
+        /** @var \EidCloud\ServerPlane\Services\SslService $svc */
+        $svc = $plane->getService('ssl');
+        if (in_array('--renew', $flags)) {
+            echo "Attempting renewal...\n";
+            $res = $svc->renewAll();
+            echo $res['stdout'] . "\n" . $res['stderr'] . "\n";
+        } else {
+            $st = $svc->getStatus();
+            if ($isJson) {
+                echo json_encode($st, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+            } else {
+                echo "\n\033[1m🔒 SSL CERTIFICATES\033[0m\n";
+                echo "Found: {$st['certificates_count']} certificates (Expiring soon: {$st['expiring_soon_count']}, Expired: {$st['expired_count']})\n";
+                foreach ($st['certificates'] as $c) {
+                    echo "  - \033[1m{$c['name']}\033[0m (Expires: {$c['expiry']}, Days: {$c['days_remaining']})\n";
+                    echo "    Domains: " . implode(', ', $c['domains'] ?? []) . "\n";
+                }
+                echo "\n";
+            }
+        }
+        break;
+
+    default:
+        echo "\033[31mUnknown command: {$command}\033[0m\n";
+        printHelp();
+        exit(1);
+}

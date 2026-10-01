@@ -1,0 +1,12 @@
+{
+  "description": "Unified Linux server control plane and service manager CLI for Nginx, PHP-FPM, MySQL, and UFW in pure PHP",
+  "topics": [
+    "eidcloud",
+    "server-control-plane",
+    "sysadmin",
+    "server-management",
+    "nginx-manager",
+    "php-fpm",
+    "php8"
+  ]
+}
